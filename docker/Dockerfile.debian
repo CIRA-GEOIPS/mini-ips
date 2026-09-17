@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 # mini-geoips on Debian slim.
 #
+# Built and published by CI for linux/amd64 at 284 MB. The per-library
+# figures below were measured on darwin/arm64, where the same tree comes out
+# at 447 MB -- the relative savings hold, the absolute numbers do not.
+#
 # Consumes the GENERATED tree (`build/`), not this repository: run
 # `python prune/slim.py` first. The image is a consumer of the artifact in
 # exactly the way the wheel is, which keeps image-building from needing git,

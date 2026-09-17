@@ -75,7 +75,7 @@ What remains is what the runtime cannot do without: `numpy`, `xarray`, `pandas`
 | YAML plugins (files declaring an `interface`) | 263 | 74 | 28% |
 | `import geoips` (best of 5) | 1.12 s | 0.66 s | 59% |
 | test suite | needs `$GEOIPS_TESTDATA_DIR` | 1,358 tests in 6 s, no data | |
-| container image | none published | 292 MB Alpine, 447 MB Debian | |
+| container image | none published | 226 MB Alpine, 284 MB Debian | |
 
 The installed Python package itself only halves, 3.2 MB to 1.6 MB. The large
 numbers above are dependencies and repository content.
@@ -248,12 +248,16 @@ docker run --rm -v "$PWD/out:/data/outdirs" mini-geoips:debian \
   run order_based <workflow> <files...>        # GEOIPS_OUTDIRS=/data/outdirs
 ```
 
-Alpine is 292 MB and Debian 447 MB (68 MB and 94 MB compressed). Alpine builds
-numpy, pyproj and shapely from source against system libraries, saving 70 MB of
-vendored native code; Debian keeps the wheels, because its `libproj25` pulls in
-a 23 MB `proj-data`. Each Dockerfile carries the measurements. Both run as a
-non-root user, bake the registry in, and assert in the runtime stage that BLAS,
-PROJ, GEOS and a geoips sector all work.
+CI builds and publishes both for linux/amd64 to
+`ghcr.io/cira-geoips/mini-ips`: Alpine 226 MB, Debian 284 MB. The same trees
+build larger on darwin/arm64 (292 and 447 MB), so calibrate from CI rather than
+a local `docker images`.
+
+Alpine builds numpy, pyproj and shapely from source against system libraries,
+saving 70 MB of vendored native code; Debian keeps the wheels, because its
+`libproj25` pulls in a 23 MB `proj-data`. Each Dockerfile carries the
+measurements. Both run as a non-root user, bake the registry in, and assert in
+the runtime stage that BLAS, PROJ, GEOS and a geoips sector all work.
 
 ## Licence
 

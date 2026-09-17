@@ -147,8 +147,11 @@ jobs:
           # the absolute number, it is noticing a regression. An upstream sync
           # that pulls in a new native dependency shows up here.
           #
-          # Measured at 1.20.0a0: alpine 292 MB, debian 447 MB. Ceilings leave
-          # headroom; raise them deliberately, in a commit that says why.
+          # Measured in CI at 1.20.0a0 on linux/amd64, which is what these
+          # jobs build and publish: alpine 226 MB, debian 284 MB. The same
+          # trees build considerably larger on darwin/arm64 (292 / 447 MB), so
+          # do not calibrate these from a local `docker images`. Ceilings leave
+          # ~15% headroom; raise them deliberately, in a commit that says why.
           #
           # `.Size` is the uncompressed image size and matches `docker images`
           # on a standard daemon. On a containerd-backed local daemon (Docker
@@ -157,8 +160,8 @@ jobs:
           # with `docker images`, not with this.
           echo "::group::$image size"
           case "${{ matrix.distro }}" in
-            alpine) budget=330 ;;
-            debian) budget=490 ;;
+            alpine) budget=260 ;;
+            debian) budget=330 ;;
           esac
           mb=$(docker image inspect "$image" --format '{{.Size}}' | awk '{printf "%.0f", $1/1048576}')
           echo "  $image: ${mb} MB (budget ${budget} MB)"
