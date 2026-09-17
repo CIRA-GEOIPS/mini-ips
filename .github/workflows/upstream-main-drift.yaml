@@ -17,6 +17,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: upstream-main-drift
+  cancel-in-progress: false
+
 jobs:
   drift:
     runs-on: ubuntu-latest
@@ -36,7 +40,12 @@ jobs:
           # one. The old version edited upstream.lock and relied on nothing
           # later committing it -- true today, but the kind of assumption that
           # breaks the first time a step is added below.
-          sed "s|^sha: .*|sha: \"$sha\"|" upstream.lock > "$RUNNER_TEMP/drift.lock"
+          # Rewrite ref as well as sha, or slim.py captions the whole report
+          # with the pinned release name and the log reads as if it classified
+          # 1.20.0a0 rather than main.
+          sed -e "s|^sha: .*|sha: \"$sha\"|" \
+              -e "s|^ref: .*|ref: \"main@${sha:0:9}\"|" \
+              upstream.lock > "$RUNNER_TEMP/drift.lock"
 
           set +e
           python prune/slim.py --check-only --lock "$RUNNER_TEMP/drift.lock" \
@@ -49,9 +58,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           title="upstream main drift"
-          body=$(printf '### %s commits ahead of the pin (`%s`)\n\n```\n%s\n```\n' \
+          # slim.py's exit code is the verdict; without it the comment is just
+          # a log dump and a reader cannot tell a clean run from a broken one.
+          case "${{ steps.drift.outputs.status }}" in
+            0) verdict="clean -- main classifies with no manifest change" ;;
+            3) verdict="UNCLASSIFIED upstream paths -- the manifest needs a rule" ;;
+            4) verdict="a patch no longer applies to main" ;;
+            5) verdict="pruning would break a geoips import" ;;
+            *) verdict="slim.py crashed (exit ${{ steps.drift.outputs.status }})" ;;
+          esac
+          body=$(printf '### %s commits ahead of the pin (`%s`)\n\n**%s**\n\n```\n%s\n```\n' \
             "${{ steps.drift.outputs.behind }}" "${{ steps.drift.outputs.sha }}" \
-            "$(tail -60 drift.log)")
+            "$verdict" "$(tail -60 drift.log)")
           existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "$body"

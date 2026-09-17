@@ -17,6 +17,7 @@ slower to start.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -77,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ceiling", type=float, default=DEFAULT_CEILING)
     parser.add_argument("--assert-budget", action="store_true")
     args = parser.parse_args(argv)
+    # Absolute, because every subprocess below runs with cwd="/" and a relative
+    # program path is resolved against the CHILD's cwd. `--python .venv/bin/python`
+    # -- exactly what CI passes -- became `/.venv/bin/python` and died with
+    # FileNotFoundError before measuring anything.
+    args.python = os.path.abspath(args.python)
 
     seconds = measure(args.python)
     if seconds is None:

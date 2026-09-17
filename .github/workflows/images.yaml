@@ -29,7 +29,10 @@ on:
 
 concurrency:
   group: images-${{ github.ref }}
-  cancel-in-progress: true
+  # The push step is a non-atomic `docker tag`/`docker push` loop over the tag
+  # list. Cancelling it midway leaves some tags published and others not, so
+  # only cancel superseded PR iterations.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io

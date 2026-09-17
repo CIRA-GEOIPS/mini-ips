@@ -68,8 +68,19 @@ def parse(tag: str):
         return None
 
 
-def newest(tags: dict[str, str], channel: str):
-    """Newest (tag, sha, Version) for the channel, or None."""
+def newest(tags: dict[str, str], channel: str, behind_pin=None):
+    """Newest usable (tag, sha, Version, skipped) for the channel, or None.
+
+    Upstream's tags are not monotonic with history: `2.0.0a0` sorts above
+    `1.20.0a0` but its commit is an ANCESTOR of it. Taking the highest version
+    and only then checking ancestry made the watcher refuse on every run and
+    never sync -- it would have filed a refusal issue nightly, forever.
+
+    So walk candidates in descending version order and take the first that is
+    not already behind the pin. `skipped` carries the ones passed over, which
+    the report prints: silently ignoring a higher tag is the kind of thing a
+    human needs told.
+    """
     candidates = []
     for tag, sha in tags.items():
         version = parse(tag)
@@ -78,34 +89,59 @@ def newest(tags: dict[str, str], channel: str):
         if channel == "stable" and version.is_prerelease:
             continue
         candidates.append((version, tag, sha))
-    if not candidates:
+
+    skipped: list[str] = []
+    for version, tag, sha in sorted(candidates, reverse=True):
+        if behind_pin is not None and behind_pin(sha):
+            skipped.append(tag)
+            continue
+        return tag, sha, version, skipped
+    return None
+
+
+def behind_pin_check(repo_path: str | None, pinned_sha: str):
+    """Build a predicate: is this commit already an ancestor of the pin.
+
+    Returns None when there is no local clone to ask, in which case selection
+    cannot skip ancestors and `verdict` falls back to refusing.
+    """
+    if not repo_path or not os.path.isdir(repo_path):
         return None
-    version, tag, sha = max(candidates)
-    return tag, sha, version
+
+    def behind(sha: str) -> bool:
+        # The pinned commit is its own ancestor, so compare first: without this
+        # the currently pinned tag skips itself, every candidate is rejected,
+        # and the watcher reports "no usable tag" instead of "already current".
+        if sha == pinned_sha:
+            return False
+        return (
+            subprocess.run(
+                # fmt: off
+                ["git", "-C", repo_path, "merge-base",
+                 "--is-ancestor", sha, pinned_sha],
+                # fmt: on
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+
+    return behind
 
 
-def verdict(lock: dict, channel: str, tag: str, sha: str, version, repo_path):
+def verdict(lock: dict, channel: str, tag: str, sha: str, version, checked_ancestry):
     """(exit code, message) for the candidate tag. No side effects."""
     current_ref = str(lock["ref"])
     current = parse(current_ref)
 
-    # Version order is not history order in this repository. Upstream tagged
-    # `2.0.0a0` at 2d3d2aa7d and then carried on to `1.20.0a0` at 751e6533e, so
-    # 2.0.0a0 sorts NEWER while being an ANCESTOR. Trusting the version alone
-    # would walk the pin backwards through history and silently drop months of
-    # commits, which is much worse than not syncing.
-    if repo_path and os.path.isdir(repo_path):
-        ancestry = subprocess.run(
-            ["git", "-C", repo_path, "merge-base", "--is-ancestor", sha, lock["sha"]],
-            capture_output=True,
+    # Without a local clone, ancestry could not be checked during selection, so
+    # a higher-sorting ancestor may still be sitting here. Refuse rather than
+    # walk the pin backwards through history and silently drop months of work.
+    if not checked_ancestry and current is not None and version > current:
+        return 3, (
+            f"REFUSING: {tag} sorts newer than {current_ref}, but with no local "
+            "clone (--repo-path) its ancestry cannot be checked, and upstream's "
+            "tags are not monotonic with history. Re-run with --repo-path."
         )
-        if ancestry.returncode == 0:
-            return 3, (
-                f"REFUSING: {tag} ({sha[:9]}) sorts newer than {current_ref} but is "
-                f"an ANCESTOR of the pinned {str(lock['sha'])[:9]} -- upstream's tag "
-                "numbering is not monotonic with history. Moving the pin here would "
-                "go backwards. Pick the ref by hand."
-            )
 
     if current is not None and version < current:
         return 3, (
@@ -150,13 +186,24 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     tags = list_remote_tags(lock["repo"])
-    found = newest(tags, channel)
+    behind_pin = behind_pin_check(args.repo_path, lock["sha"])
+    found = newest(tags, channel, behind_pin)
     if found is None:
-        sys.exit(f"error: no {channel} tags found in {lock['repo']}")
-    tag, sha, version = found
+        sys.exit(
+            f"error: no usable {channel} tag in {lock['repo']} "
+            "(every candidate is already an ancestor of the pinned commit)"
+        )
+    tag, sha, version, skipped = found
 
-    code, message = verdict(lock, channel, tag, sha, version, args.repo_path)
+    code, message = verdict(
+        lock, channel, tag, sha, version, checked_ancestry=behind_pin is not None
+    )
     print(message)
+    if skipped:
+        print(
+            f"  skipped {len(skipped)} higher-sorting tag(s) already behind the "
+            f"pin: {', '.join(skipped)}"
+        )
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as handle:
@@ -167,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
                     "current_sha": lock["sha"],
                     "latest_ref": tag,
                     "latest_sha": sha,
+                    "skipped_behind_pin": skipped,
                     "refused": message if code == 3 else None,
                 },
                 handle,

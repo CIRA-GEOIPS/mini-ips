@@ -7,16 +7,27 @@
 name: verify
 
 on:
+  # No paths-ignore on pull_request. This is the required check, and a PR that
+  # changes only ignored paths produces NO run at all -- so the check never
+  # reports and the PR can never merge. Skipping is only safe on push.
   pull_request:
-    paths-ignore: ["README.md", "docs/**"]
   push:
     branches: [main]
-    paths-ignore: ["README.md", "docs/**"]
+    paths-ignore: ["README.md"]
   workflow_dispatch:
 
 concurrency:
   group: verify-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR iterations, but let pushes to main finish: otherwise a
+  # second push cancels the first commit's run and that commit never gets a
+  # verdict from the workflow this repo treats as its gate.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Both jobs only read. This is the workflow that executes a PR's build backend
+# (`uv pip install -e ./build` runs setuptools hooks from the PR's tree), so it
+# is the one that should hold the narrowest token.
+permissions:
+  contents: read
 
 jobs:
   verify:
@@ -68,7 +79,9 @@ jobs:
       # patch that stops deferring matplotlib or cartopy still builds, still
       # passes the tests, and just makes every invocation slower.
       - name: Import time
-        run: python tools/import_time.py --python .venv/bin/python --assert-budget
+        run: |
+          python tools/import_time.py \
+            --python "$GITHUB_WORKSPACE/.venv/bin/python" --assert-budget
 
       - uses: actions/upload-artifact@v4
         if: always()

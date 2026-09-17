@@ -17,6 +17,11 @@ on:
 
 permissions:
   contents: write
+  # `issues: write` is load-bearing, not belt-and-braces: an explicit
+  # permissions block sets every unlisted scope to none, and the refusal path
+  # below calls `gh issue create`. Without it that path 403s -- and the refusal
+  # path is exactly the one that fires when something has gone wrong.
+  issues: write
   pull-requests: write
 
 concurrency:
@@ -116,7 +121,8 @@ jobs:
           echo "registry_status=$?" >> "$GITHUB_OUTPUT"
           (cd build && "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest) > tests.log 2>&1
           echo "tests_status=$?" >> "$GITHUB_OUTPUT"
-          python tools/import_time.py --python .venv/bin/python --assert-budget > import.log 2>&1
+          python tools/import_time.py --python "$GITHUB_WORKSPACE/.venv/bin/python" \
+            --assert-budget > import.log 2>&1
           echo "import_status=$?" >> "$GITHUB_OUTPUT"
           set -e
 
@@ -141,9 +147,17 @@ jobs:
           branch="sync/upstream-$REF"
           git config user.name "mini-ips sync"
           git config user.email "mini-ips-sync@users.noreply.github.com"
+          # --force-with-lease needs a remote-tracking ref to compare against.
+          # actions/checkout@v4 fetches a single branch at depth 1, so there is
+          # none for the sync branch and the lease has nothing to hold.
+          git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch" || true
           git checkout -B "$branch"
           git add upstream.lock prune/dependency-closure.lock prune/patches
-          git commit -m "sync: upstream geoips $REF" || echo "nothing to commit"
+          if git diff --cached --quiet; then
+            echo "nothing to sync: the regenerated recipe is identical"
+            exit 0
+          fi
+          git commit -m "sync: upstream geoips $REF"
           git push --force-with-lease origin "$branch"
 
           labels="upstream-sync"
