@@ -1,0 +1,35 @@
+diff --git a/geoips/interfaces/yaml_based/sectors.py b/geoips/interfaces/yaml_based/sectors.py
+index 67beea3..f6dc39b 100644
+--- a/geoips/interfaces/yaml_based/sectors.py
++++ b/geoips/interfaces/yaml_based/sectors.py
+@@ -5,14 +5,12 @@
+ 
+ from importlib.resources import files
+ 
+-from cartopy import feature as cfeature
+ import numpy as np
+ from pyresample import kd_tree, load_area
+ import xarray as xr
+ 
+ from geoips.filenames.base_paths import PATHS as gpaths
+ from geoips.interfaces.base import BaseYamlPlugin, BaseYamlInterface
+-from geoips.image_utils.mpl_utils import create_figure_and_main_ax_and_mapobj
+ from geoips.utils.types.datatree_ditto import DataTreeDitto
+ 
+ 
+@@ -112,6 +110,15 @@ class SectorPluginBase(BaseYamlPlugin):
+             - If true, no border will be added to the axes instance. Otherwise, add
+               a simple border (useful for gridline labels).
+         """
++        # cartopy and matplotlib are only needed to RENDER a sector, never to
++        # resolve or use one, so they are deferred to here and shipped as the
++        # `imagery` extra. Importing them at module scope made every OBP run
++        # pay ~190 ms and pulled cartopy into the default install.
++        from cartopy import feature as cfeature
++        from geoips.image_utils.mpl_utils import (
++            create_figure_and_main_ax_and_mapobj,
++        )
++
+         if overlay:
+             global_sector = sectors.get_plugin("global_cylindrical")
+             global_area_def = global_sector.area_definition

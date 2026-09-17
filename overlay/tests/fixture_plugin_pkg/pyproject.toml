@@ -1,0 +1,33 @@
+# A minimal external GeoIPS plugin package, used by the test suite.
+#
+# mini-ips exists so that plugins can live OUTSIDE the geoips package. That
+# claim is only worth anything if CI proves it, so this package is installed
+# during verification, its registry is built, and a real workflow is run
+# through the order-based procflow against it. Nothing else in the suite
+# exercises that contract end to end.
+#
+# It depends on nothing beyond mini-geoips' own required set, so installing it
+# cannot mask a dependency-budget regression.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-ips-fixture-plugins"
+version = "0.1.0"
+description = "Synthetic external plugin package for the mini-ips test suite"
+requires-python = ">=3.11"
+dependencies = []
+
+# This is the whole mechanism a third-party package needs: advertise itself in
+# the `geoips.plugin_packages` group, with the value naming an importable
+# module that has a `plugins/` directory.
+[project.entry-points."geoips.plugin_packages"]
+mini_ips_fixture_plugins = "mini_ips_fixture_plugins"
+
+[tool.setuptools.packages.find]
+include = ["mini_ips_fixture_plugins*"]
+
+[tool.setuptools.package-data]
+mini_ips_fixture_plugins = ["plugins/**/*.yaml"]

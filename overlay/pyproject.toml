@@ -1,0 +1,108 @@
+# mini-geoips -- an order-based-procflow-only fork of NRLMMD-GEOIPS/geoips.
+#
+# The DISTRIBUTION is renamed so it can be published without colliding with
+# upstream on PyPI, but the IMPORT PACKAGE stays `geoips` and the entry-point
+# group stays `geoips.plugin_packages`, so existing external plugin packages
+# work unmodified. That makes mini-geoips a drop-in replacement rather than a
+# parallel ecosystem -- and it means mini-geoips and upstream geoips cannot be
+# installed side by side, which is intended.
+#
+# This file is fork-owned (overlay/), not patched from upstream. Upstream uses
+# poetry + poetry-dynamic-versioning, which derives the version from git tags;
+# a fork that fetches upstream tags would emit UPSTREAM's version numbers, so
+# the build backend is setuptools with an explicit version instead.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-geoips"
+version = "0.1.0"
+description = "Order-based procflow runtime from GeoIPS, for external plugin packages"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { file = "LICENSE" }
+keywords = ["GeoIPS", "order-based-procflow", "satellite", "plugins"]
+classifiers = ["Programming Language :: Python :: 3"]
+
+# THE dependency budget. prune/slim.py resolves this list to its full transitive
+# closure and derives which built-in plugins may ship from it, so adding a line
+# here can admit plugins -- it is a policy edit, not just an install hint.
+# It used to be stated twice, here and in the manifest, and the two had already
+# drifted (numpy was here and not there).
+dependencies = [
+  "pydantic>=2.10.0",
+  "xarray>=2025.3.1",
+  "numpy>=2.3.0",
+  "pluginify==1.0.0",       # exact: the one external contract we depend on
+  "platformdirs",
+  "pyyaml",
+  "geoips-yaml-utils",
+  "pyresample",
+  "jsonschema>4.18.0",
+  "referencing",
+  "tabulate",
+  "typing-extensions",
+  "cftime",
+  "dask",                   # utils/types/tokenization.py -- undeclared upstream
+  "lexeme-type",            # interfaces/yaml_based/workflows.py -- undeclared upstream
+]
+
+[project.optional-dependencies]
+# For EXTERNAL plugins that reuse geoips' plotting helpers
+# (`geoips.image_utils.mpl_utils`) and for `SectorPluginBase.create_test_plot`.
+# mini-ips ships no built-in plugin that needs these -- see
+# `plugins.budget_tier` in prune/manifest.yaml.
+imagery = ["matplotlib>=3.7.0", "cartopy>=0.23.0"]
+# For external readers using netCDF. geoips/__init__.py imports netCDF4 ahead
+# of xarray when present, because that ordering avoids reader segfaults.
+netcdf = ["netcdf4>1.7.0"]
+# The zarr geolocation-cache backend for the geostationary reader helpers.
+# Both imports are guarded, so without them the netCDF cache backend is used.
+geostationary = ["zarr", "numexpr"]
+test = ["pytest", "pytest-mock"]
+lint = ["black", "flake8", "flake8-docstrings", "flake8-rst-docstrings", "bandit"]
+
+[project.urls]
+Homepage = "https://github.com/NRLMMD-GEOIPS/geoips"
+Upstream = "https://github.com/NRLMMD-GEOIPS/geoips"
+
+# How geoips discovers its own plugins. The group name and the value must stay
+# `geoips` -- `geoips_utils.py` scans this group, and `interfaces/base.py`
+# resolves `SCHEMA_PATH = files("geoips")`.
+[project.entry-points."geoips.plugin_packages"]
+geoips = "geoips"
+
+[project.scripts]
+# `geoips`, matching upstream, so its documented invocations still work. There
+# is deliberately no second alias: mini-geoips cannot be co-installed with
+# upstream geoips anyway (both own the `geoips` import package), so a
+# distinct-name entry point would only be a second thing to document.
+geoips = "geoips_cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["geoips*", "geoips_cli*"]
+
+[tool.setuptools.package-data]
+geoips = [
+  "schema/**/*.yaml",
+  "plugins/**/*.yaml",
+  "plugins/**/*.txt",
+]
+
+# ---------------------------------------------------------------------------
+# Fork tooling settings. Read by prune/slim.py and tools/depbudget.py; ignored
+# by pip and by every build backend.
+# ---------------------------------------------------------------------------
+[tool.mini-ips]
+# Which optional-dependency groups count as RUNTIME extras, i.e. which ones the
+# `all` budget tier is allowed to admit plugins against. `lint` and `test` are
+# developer tooling and must never widen the plugin set.
+runtime_extras = ["imagery", "netcdf", "geostationary"]
+
+# Ceilings on the resolved transitive closure, asserted by prune/slim.py. Not
+# targets -- raise them deliberately, in a commit that says why. Measured at
+# upstream 1.20.0a0: 45 required, 59 with every runtime extra.
+max_packages_required = 60
+max_packages_with_extras = 65

@@ -1,0 +1,24 @@
+diff --git a/geoips/data_manipulations/merge.py b/geoips/data_manipulations/merge.py
+index fe4151a..a6147b2 100644
+--- a/geoips/data_manipulations/merge.py
++++ b/geoips/data_manipulations/merge.py
+@@ -108,7 +108,18 @@ def find_datafiles_in_range(
+         max_time,
+     )
+     from glob import glob
+-    from geoips.filenames.product_filenames import netcdf_write_filename
++
++    # `geoips.filenames.product_filenames` does not exist anywhere in geoips --
++    # `geoips/filenames/` contains only __init__, base_paths and
++    # duplicate_files. This deferred import has been dead since before
++    # 1.20.0a0, so every call to find_datafiles_in_range() already died here
++    # with ModuleNotFoundError. Reported upstream; fail explicitly instead of
++    # importing something unresolvable, so the import-closure gate stays
++    # meaningful.
++    raise NotImplementedError(
++        "find_datafiles_in_range() requires geoips.filenames.product_filenames, "
++        "which does not exist in geoips. Reported to NRLMMD-GEOIPS/geoips."
++    )
+ 
+     fnames = []
+     first = True

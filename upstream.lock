@@ -1,0 +1,22 @@
+# The pinned upstream geoips revision that mini-ips is generated from.
+#
+# This is the ONLY file you edit to move to a new upstream release.
+# `upstream-release-watch.yaml` bumps `ref` and `sha` together; everything
+# else is derived by prune/slim.py.
+#
+# channel:
+#   stable      -- only final releases (1.20.0, 1.21.0, ...)
+#   prerelease  -- also alphas/betas (1.20.0a0, 2.0.0a0, ...)
+#   main        -- track the upstream default branch (drift watching only)
+#
+# The order-based procflow is the 2.0 line, which is still shipping as
+# pre-releases, so `prerelease` is the meaningful channel today.
+
+repo: https://github.com/NRLMMD-GEOIPS/geoips.git
+channel: prerelease
+ref: "1.20.0a0"
+sha: "751e6533e29de3ed653036a6f918d55e961f60d9" # quoted: an all-digit hex sha would otherwise parse as an int
+
+# Exact pin for the one external package whose contract we depend on and whose
+# source lives outside this repo. Bump deliberately, never by resolver drift.
+pluginify: "1.0.0"

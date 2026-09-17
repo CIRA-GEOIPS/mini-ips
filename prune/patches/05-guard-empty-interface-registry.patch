@@ -1,0 +1,24 @@
+diff --git a/geoips/pydantic_models/v1/workflows.py b/geoips/pydantic_models/v1/workflows.py
+index 1ffe948..2a96f4b 100644
+--- a/geoips/pydantic_models/v1/workflows.py
++++ b/geoips/pydantic_models/v1/workflows.py
+@@ -122,9 +122,16 @@ def get_plugin_names(plugin_kind: str) -> List[str]:
+         LOG.critical(error_message, exc_info=True)
+         raise AttributeError(error_message) from e
+ 
+-    interface_entry = interface.plugin_registry.registered_plugins[
+-        interface.interface_type
+-    ][interface_name]
++    # An interface with zero registered plugins is normal for mini-ips: the
++    # built-in plugin set is derived from a dependency budget, and external
++    # packages supply the rest, so `sector_adjusters` or `databases` may be
++    # empty. Upstream indexes straight through and raises KeyError, which
++    # surfaces as an opaque crash rather than a plugin-resolution error.
++    # `geoips/commandline/geoips_command.py` already guards this same lookup.
++    registered = interface.plugin_registry.registered_plugins
++    interface_entry = registered.get(interface.interface_type, {}).get(
++        interface_name, {}
++    )
+ 
+     if interface_name == "products":
+         plugin_names = []

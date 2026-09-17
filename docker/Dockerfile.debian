@@ -1,0 +1,101 @@
+# syntax=docker/dockerfile:1
+# mini-geoips on Debian slim.
+#
+# Consumes the GENERATED tree (`build/`), not this repository: run
+# `python prune/slim.py` first. The image is a consumer of the artifact in
+# exactly the way the wheel is, which keeps image-building from needing git,
+# the upstream clone, or the prune tooling.
+#
+#   python prune/slim.py
+#   docker build -f docker/Dockerfile.debian -t mini-geoips:debian .
+#
+# Two stages so the compilers do not ship: the runtime carries only the venv.
+#
+# Size: unlike the Alpine image, this one does NOT build native packages from
+# source, because on Debian that measures out worse. Installed sizes on trixie
+# against what the wheels vendor:
+#
+#     libopenblas0     25 MB  vs  numpy.libs        33 MB   ->  -8 MB
+#     libgeos-c1t64     3 MB  vs  shapely.libs      10 MB   ->  -7 MB
+#     libproj25        42 MB  vs  pyproj.libs+data  27 MB   -> +15 MB
+#
+# `libproj25` drags in Debian's 23 MB `proj-data`, where pyproj's wheel bundles
+# a 10 MB proj.db -- so source-building pyproj here makes the image bigger. The
+# numpy and shapely savings are real but small, and cost a long compile, so
+# this image keeps the wheels and takes only the free win: the ~49 MB of
+# bundled test suites that no runtime path touches.
+#
+# Alpine reaches 292 MB partly because its equivalents are far leaner
+# (proj+geos+libgomp+libstdc++ together are 26 MB) and were already installed
+# there. See docker/Dockerfile.alpine.
+
+# --------------------------------------------------------------------------
+FROM python:3.12-slim-bookworm AS builder
+
+# No toolchain here on purpose. Every required dependency has a manylinux
+# wheel and this image keeps the wheels (see the size note above), so
+# build-essential added ~180 MB to the builder and compiled nothing. The stage
+# still exists to keep the venv separable from the runtime image; if a future
+# dependency ever loses its wheel, the install fails loudly here rather than
+# quietly compiling into the shipped image.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /src
+COPY build/ /src/
+
+# A plain (non-editable) install: the runtime stage copies /opt/venv and not
+# /src, so an editable install would ship a venv pointing at a path that does
+# not exist.
+RUN uv venv /opt/venv \
+    && VIRTUAL_ENV=/opt/venv uv pip install --no-cache /src
+
+# ~49 MB of bundled test suites that no runtime path touches. `xarray/tests` is
+# the exception: it is a real module that
+# `tests/unit_tests/utils/types/test_datatree_ditto_FROM_XARRAY.py` imports, so
+# it is kept -- 4 MB to avoid silently breaking anyone who runs the suite
+# inside the container.
+#
+# Stripping is not a lever: the wheels ship already stripped, so
+# `strip --strip-unneeded` across all 105 .so files saves 0 MB (measured).
+RUN find /opt/venv -type d \( -name tests -o -name test \) \
+        -not -path "*/xarray/tests" \
+        -exec rm -rf {} + 2>/dev/null || true \
+    && find /opt/venv -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
+# --------------------------------------------------------------------------
+FROM python:3.12-slim-bookworm AS runtime
+
+LABEL org.opencontainers.image.title="mini-geoips" \
+      org.opencontainers.image.description="GeoIPS order-based procflow runtime" \
+      org.opencontainers.image.source="https://github.com/NRLMMD-GEOIPS/geoips"
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    GEOIPS_OUTDIRS=/data/outdirs
+
+# Non-root, with a stable HOME. The plugin registry lives under the user's
+# platformdirs cache, so building it as one user and running as another would
+# silently rebuild it on every start.
+RUN useradd --create-home --uid 10001 geoips \
+    && mkdir -p /data/outdirs \
+    && chown -R geoips:geoips /data
+USER geoips
+WORKDIR /home/geoips
+
+# Bake the registry in so the first `geoips run` does not pay to build it.
+RUN geoips config create-registries
+
+# Assert the image can do the work, as the final user, against exactly what is
+# published. See the file for why it is a file.
+#
+# Bind-mounted rather than COPYed: this stage runs as `geoips`, and a COPYed
+# file lands root-owned in a sticky /tmp that geoips cannot then delete -- and
+# deleting it in a later layer would not shrink the image anyway. A bind mount
+# leaves nothing behind at all.
+RUN --mount=type=bind,source=docker/selfcheck.py,target=/tmp/selfcheck.py \
+    python /tmp/selfcheck.py
+
+ENTRYPOINT ["geoips"]
+CMD ["--help"]

@@ -1,0 +1,172 @@
+# Build and smoke-test the Debian and Alpine images.
+#
+# Separate from `verify` because these are slower and answer a different
+# question: `verify` asks "is the generated tree correct?", this asks "does it
+# install and run on a real distro?". Alpine is the one that earns its keep --
+# musl gets far fewer prebuilt wheels, so it catches dependency problems glibc
+# hides. It has already caught two: pykdtree's musllinux wheel needs libgomp,
+# which Alpine does not ship by default, and pyproj built from source needs
+# PROJ_DATA pointed at the system proj.db.
+#
+# The two images use deliberately different strategies -- Alpine builds numpy,
+# pyproj and shapely from source against system libraries, Debian keeps the
+# wheels -- because the sizes measure out that way. Each Dockerfile carries the
+# numbers.
+name: images
+
+on:
+  pull_request:
+    paths:
+      - "docker/**"
+      - "prune/**"
+      - "overlay/pyproject.toml"
+      - "upstream.lock"
+      - ".github/workflows/images.yaml"
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      # Build both even when one fails: knowing "Debian is fine, Alpine is not"
+      # is the whole point of running the pair.
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            dockerfile: docker/Dockerfile.debian
+          - distro: alpine
+            dockerfile: docker/Dockerfile.alpine
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      # The images consume the generated tree, so it has to exist first. This
+      # is the same artifact the wheel is built from.
+      - name: Generate build/
+        run: python prune/slim.py --upstream-path upstream-geoips
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        # Only when we will actually push. PRs from forks have no package write.
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          flavor: |
+            suffix=-${{ matrix.distro }},onlatest=true
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,format=short
+
+      # Built exactly once. Load it into the local daemon, exercise it, then
+      # push those same bytes -- an earlier version ran build-push-action a
+      # second time with push:true, which published an image that was rebuilt
+      # (from cache, but rebuilt) rather than the one the smoke test passed.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          load: true
+          push: false
+          tags: mini-geoips:${{ matrix.distro }}
+          # Applied at build time, not at push time: the push step below is a
+          # plain `docker tag` + `docker push`, so anything not baked in here
+          # never reaches the registry.
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.distro }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.distro }}
+
+      # The Dockerfiles already assert that `order_based` resolves at build
+      # time. This checks the things only a running container shows.
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          image=mini-geoips:${{ matrix.distro }}
+
+          echo "::group::$image geoips --help"
+          docker run --rm "$image" --help
+          echo "::endgroup::"
+
+          echo "::group::$image registry"
+          plugins=$(docker run --rm "$image" list plugins | awk 'NF==3' | wc -l)
+          echo "registered plugins: $plugins"
+          test "$plugins" -gt 100
+          echo "::endgroup::"
+
+          echo "::group::$image reference workflow"
+          docker run --rm "$image" list workflows | grep -q mini_ips_reference
+          docker run --rm "$image" expand mini_ips_reference | grep -q 'name: mini_ips_reference'
+          echo "::endgroup::"
+
+          # This assertion used to be `test "$(... ; echo ok)" = ok`, which
+          # compares "ok" with "ok" whatever the container does.
+          echo "::group::$image runs as non-root and can write output"
+          user=$(docker run --rm --entrypoint id "$image" -un)
+          echo "runs as: $user"
+          test "$user" != root
+          docker run --rm --entrypoint sh "$image" -c \
+            'touch "$GEOIPS_OUTDIRS/probe" && echo "GEOIPS_OUTDIRS writable"'
+          echo "::endgroup::"
+
+          # Size budget, same idea as the dependency budget: the point is not
+          # the absolute number, it is noticing a regression. An upstream sync
+          # that pulls in a new native dependency shows up here.
+          #
+          # Measured at 1.20.0a0: alpine 292 MB, debian 447 MB. Ceilings leave
+          # headroom; raise them deliberately, in a commit that says why.
+          #
+          # `.Size` is the uncompressed image size and matches `docker images`
+          # on a standard daemon. On a containerd-backed local daemon (Docker
+          # Desktop with the containerd image store) `.Size` reports only the
+          # platform manifest and reads far smaller -- so compare local numbers
+          # with `docker images`, not with this.
+          echo "::group::$image size"
+          case "${{ matrix.distro }}" in
+            alpine) budget=330 ;;
+            debian) budget=490 ;;
+          esac
+          mb=$(docker image inspect "$image" --format '{{.Size}}' | awk '{printf "%.0f", $1/1048576}')
+          echo "  $image: ${mb} MB (budget ${budget} MB)"
+          if [ "$mb" -gt "$budget" ]; then
+            echo "::error::$image is ${mb} MB, over the ${budget} MB budget"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+      # Retag and push the image the smoke test just ran. No second build.
+      - name: Push
+        if: github.event_name == 'push'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          echo "$TAGS" | while read -r tag; do
+            [ -n "$tag" ] || continue
+            docker tag "mini-geoips:${{ matrix.distro }}" "$tag"
+            docker push "$tag"
+          done

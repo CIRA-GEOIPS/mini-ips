@@ -1,0 +1,172 @@
+# Nightly: notice a new upstream geoips release, regenerate against it, and
+# open a PR containing the changes it could make itself plus a triage report
+# for the rest.
+#
+# The PR opens even when the build fails. A red PR with a precise diagnosis is
+# the deliverable; a silently failing nightly workflow is not.
+name: upstream-release-watch
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force_ref:
+        description: "Sync to this upstream tag regardless of detection"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-release-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      # Passing --repo-path is what makes this safe: upstream's tags are not
+      # monotonic with history (2.0.0a0 sorts above 1.20.0a0 but is an ancestor
+      # of it), so version order alone would walk the pin backwards.
+      - name: Detect a new release
+        id: detect
+        run: |
+          set +e
+          python tools/check_upstream.py --repo-path upstream-geoips \
+            --json upstream.json > detect.log 2>&1
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat detect.log
+          if [ -f upstream.json ]; then
+            echo "ref=$(python -c "import json;print(json.load(open('upstream.json'))['latest_ref'])")" >> "$GITHUB_OUTPUT"
+            echo "sha=$(python -c "import json;print(json.load(open('upstream.json'))['latest_sha'])")" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Exit 3 means "refusing to move the pin" -- a retag, a moved tag, or the
+      # ancestry trap. That needs a human, and an issue is the right channel:
+      # there is no correct PR to open.
+      - name: Report a refusal as an issue
+        if: steps.detect.outputs.status == '3'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="upstream sync refused: cannot move the pin safely"
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
+          # The detect step's own output, not a second run of it: re-running
+          # meant a second ls-remote against upstream and, if a tag moved in
+          # between, an issue body describing a different refusal than the one
+          # that fired.
+          body=$(cat detect.log)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --label upstream-sync --body "$body"
+          fi
+
+      - name: Nothing to do
+        if: steps.detect.outputs.status == '1'
+        run: echo "already on the newest upstream release"
+
+      - name: Bump the lock and regenerate
+        if: steps.detect.outputs.status == '0' || github.event.inputs.force_ref != ''
+        id: regen
+        env:
+          REF: ${{ github.event.inputs.force_ref || steps.detect.outputs.ref }}
+        run: |
+          set +e
+          if [ -n "${{ github.event.inputs.force_ref }}" ]; then
+            SHA=$(git -C upstream-geoips rev-list -n1 "refs/tags/$REF")
+          else
+            SHA="${{ steps.detect.outputs.sha }}"
+          fi
+          python - "$REF" "$SHA" <<'PY'
+          import re, sys
+          ref, sha = sys.argv[1], sys.argv[2]
+          text = open("upstream.lock").read()
+          text = re.sub(r'^ref: .*$', f'ref: "{ref}"', text, flags=re.M)
+          text = re.sub(r'^sha: .*$', f'sha: "{sha}"', text, flags=re.M)
+          open("upstream.lock", "w").write(text)
+          PY
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+          # The dependency closure is a derived, checked-in artifact; refresh it
+          # so a widened dependency surface shows up as a diff in the PR. The
+          # tree argument matters and used to be wrong (`geoips`, a directory
+          # that does not exist here) -- with stderr discarded, the crash after
+          # the refresh was invisible.
+          python tools/depbudget.py upstream-geoips --refresh > depbudget.log 2>&1
+
+          # Classification, patches and the import-closure gate all happen here;
+          # slim.json records each one's outcome, which is what the PR body
+          # reads. Exit 3 = unclassified paths, 5 = a newly dangling import.
+          python prune/slim.py --upstream-path upstream-geoips --json slim.json > slim.log 2>&1
+          echo "slim_status=$?" >> "$GITHUB_OUTPUT"
+
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e ./build >/dev/null 2>&1
+          uv pip install --python .venv/bin/python -e ./build/tests/fixture_plugin_pkg >/dev/null 2>&1
+          uv pip install --python .venv/bin/python pytest pytest-mock >/dev/null 2>&1
+          export GEOIPS_OUTDIRS="$RUNNER_TEMP/geoips_outdirs"
+          .venv/bin/geoips config create-registries > registry.log 2>&1
+          echo "registry_status=$?" >> "$GITHUB_OUTPUT"
+          (cd build && "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest) > tests.log 2>&1
+          echo "tests_status=$?" >> "$GITHUB_OUTPUT"
+          python tools/import_time.py --python .venv/bin/python --assert-budget > import.log 2>&1
+          echo "import_status=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      # Verdicts, not log-greps: classify/patches/closure come from slim.json's
+      # own record, the three stages that run outside slim.py pass exit codes.
+      - name: Compose the triage report
+        if: steps.regen.conclusion == 'success'
+        run: |
+          python tools/sync_report.py --out pr-body.md \
+            --status registry=${{ steps.regen.outputs.registry_status }} \
+            --status tests=${{ steps.regen.outputs.tests_status }} \
+            --status import=${{ steps.regen.outputs.import_status }}
+
+      # One branch per tag, so a nightly run updates its PR instead of opening
+      # a second one for the same release.
+      - name: Open or update the sync PR
+        if: steps.regen.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ steps.regen.outputs.ref }}
+        run: |
+          branch="sync/upstream-$REF"
+          git config user.name "mini-ips sync"
+          git config user.email "mini-ips-sync@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add upstream.lock prune/dependency-closure.lock prune/patches
+          git commit -m "sync: upstream geoips $REF" || echo "nothing to commit"
+          git push --force-with-lease origin "$branch"
+
+          labels="upstream-sync"
+          if [ "${{ steps.regen.outputs.slim_status }}" != "0" ] \
+            || [ "${{ steps.regen.outputs.tests_status }}" != "0" ] \
+            || [ "${{ steps.regen.outputs.registry_status }}" != "0" ] \
+            || [ "${{ steps.regen.outputs.import_status }}" != "0" ]; then
+            labels="$labels,needs-triage"
+          fi
+
+          if gh pr view "$branch" >/dev/null 2>&1; then
+            gh pr edit "$branch" --body-file pr-body.md --add-label "$labels"
+          else
+            gh pr create --head "$branch" --base main \
+              --title "sync: upstream geoips $REF" \
+              --body-file pr-body.md --label "$labels"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sync-logs
+          path: |
+            *.log
+            slim.json
+            upstream.json

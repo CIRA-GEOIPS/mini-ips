@@ -1,0 +1,29 @@
+apiVersion: geoips/v1
+interface: workflows
+family: order_based
+name: fixture_workflow
+package: mini_ips_fixture_plugins
+docstring: |
+  End-to-end order-based workflow built entirely from external plugins.
+
+  Every step resolves to a plugin in this package rather than in geoips, which
+  is the contract mini-ips exists to support. If this workflow runs, an
+  external plugin package can drive the order-based procflow without any
+  built-in plugin of the same kind being present.
+
+  Deliberately needs no input data: ``fixture_reader`` fabricates its array, so
+  the test runs with no ``$GEOIPS_TESTDATA_DIR`` and no network.
+spec:
+  steps:
+    reader:
+      kind: reader
+      name: fixture_reader
+      depends_on: []
+      arguments: {}
+
+    algorithm:
+      kind: algorithm
+      name: fixture_scale
+      depends_on: [reader]
+      arguments:
+        factor: 3.0

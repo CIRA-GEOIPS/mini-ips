@@ -1,0 +1,2 @@
+[geoips.plugin_packages]
+mini_ips_fixture_plugins = mini_ips_fixture_plugins

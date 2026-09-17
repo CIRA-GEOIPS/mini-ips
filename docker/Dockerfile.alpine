@@ -1,0 +1,131 @@
+# syntax=docker/dockerfile:1
+# mini-geoips on Alpine (musl).
+#
+# Consumes the GENERATED tree (`build/`): run `python prune/slim.py` first.
+#
+#   python prune/slim.py
+#   docker build -f docker/Dockerfile.alpine -t mini-geoips:alpine .
+#
+# This image is only practical because of the `required` budget tier. matplotlib
+# and cartopy are the two dependencies with no musllinux wheels worth relying
+# on -- cartopy in particular wants PROJ and GEOS headers plus a long compile --
+# and the strict tier keeps both out of the default install.
+#
+# Size: three of the required wheels bundle their own copies of native
+# libraries that Alpine already packages, and those copies dominate the image:
+#
+#     numpy.libs        33 MB  (a 26 MB vendored OpenBLAS)
+#     pyproj.libs       17 MB  (libproj, libcurl, libsqlite3, libtiff, libstdc++)
+#     pyproj/proj_dir   10 MB  (a second copy of the PROJ database)
+#     shapely.libs      10 MB  (libgeos)
+#
+# So numpy, pyproj and shapely are built from source against the system
+# libraries instead. That trades 70 MB of duplicated native code for one new
+# runtime package (openblas, 12 MB) -- `proj` and `geos` were already installed
+# and, before this, entirely unused, because the wheels' RUNPATHs pointed at
+# their own bundled copies.
+#
+# Stripping was measured and is NOT a lever here: the wheels ship already
+# stripped, so `strip --strip-unneeded` across all 105 .so files saves 0 MB.
+
+# --------------------------------------------------------------------------
+FROM python:3.12-alpine AS builder
+
+# musl gets far fewer prebuilt wheels than glibc, and we deliberately compile
+# three more, so this stage is a real toolchain.
+#   build-base, gfortran   -- C/C++/Fortran (numpy needs Fortran)
+#   openblas-dev           -- numpy's BLAS/LAPACK, instead of the vendored one
+#   proj-dev, proj-util    -- pyproj; proj-util provides projinfo for detection
+#   geos-dev               -- shapely (geos-config drives its build)
+#   linux-headers, pkgconf -- required by several C extensions on musl
+RUN apk add --no-cache \
+    build-base \
+    gfortran \
+    openblas-dev \
+    proj-dev \
+    proj-util \
+    geos-dev \
+    linux-headers \
+    pkgconf
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /src
+COPY build/ /src/
+
+# pyproj looks here for PROJ rather than vendoring it.
+ENV PROJ_DIR=/usr
+
+# `--no-binary` is given a package name each time, on purpose. Bare `--no-binary`
+# with no argument would also compile pandas: a very long build for the 5 MB its
+# vendored libs cost -- not worth it.
+RUN uv venv /opt/venv \
+    && VIRTUAL_ENV=/opt/venv uv pip install --no-cache \
+        --no-binary numpy \
+        --no-binary pyproj \
+        --no-binary shapely \
+        /src
+
+# Bundled test suites are ~49 MB and no runtime path touches them.
+# `xarray/tests` is the exception: it is a real module that
+# `tests/unit_tests/utils/types/test_datatree_ditto_FROM_XARRAY.py` imports, so
+# it is kept -- 4 MB to avoid silently breaking anyone who tries to run the
+# suite inside the container.
+RUN find /opt/venv -type d \( -name tests -o -name test \) \
+        -not -path "*/xarray/tests" \
+        -exec rm -rf {} + 2>/dev/null || true \
+    && find /opt/venv -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
+# --------------------------------------------------------------------------
+FROM python:3.12-alpine AS runtime
+
+LABEL org.opencontainers.image.title="mini-geoips" \
+      org.opencontainers.image.description="GeoIPS order-based procflow runtime (musl)" \
+      org.opencontainers.image.source="https://github.com/NRLMMD-GEOIPS/geoips"
+
+# Runtime shared libraries only -- compilers and -dev packages stay behind.
+#
+# `openblas`, `proj` and `geos` are load-bearing here, not belt-and-braces: the
+# builder linked numpy, pyproj and shapely against them, and `proj` is also
+# where the 10 MB proj.db now comes from.
+#
+# `libgomp` is not optional and not obvious: pykdtree (a pyresample dependency)
+# publishes a musllinux wheel built against OpenMP, so on Alpine it imports
+# only if libgomp is present. Without it `geoips config create-registries`
+# fails with "Pykdtree failed to import its C extension", which reads like a
+# build problem rather than a missing runtime library. glibc images get this
+# from the base image.
+RUN apk add --no-cache openblas proj geos libgomp libstdc++
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    GEOIPS_OUTDIRS=/data/outdirs \
+    # Built from source, pyproj has no bundled `proj_dir` to fall back on and
+    # does not search /usr/share/proj by itself, so the PROJ database has to be
+    # pointed at explicitly. Without this every CRS operation raises
+    # DataDirError -- and it is invisible until something actually projects,
+    # which is why the assertion below exercises a real transform.
+    PROJ_DATA=/usr/share/proj
+
+RUN adduser -D -u 10001 geoips \
+    && mkdir -p /data/outdirs \
+    && chown -R geoips:geoips /data
+USER geoips
+WORKDIR /home/geoips
+
+RUN geoips config create-registries
+
+# Assert the image can do the work, as the final user, against exactly what is
+# published. See the file for why it is a file.
+#
+# Bind-mounted rather than COPYed: this stage runs as `geoips`, and a COPYed
+# file lands root-owned in a sticky /tmp that geoips cannot then delete -- and
+# deleting it in a later layer would not shrink the image anyway. A bind mount
+# leaves nothing behind at all.
+RUN --mount=type=bind,source=docker/selfcheck.py,target=/tmp/selfcheck.py \
+    python /tmp/selfcheck.py
+
+ENTRYPOINT ["geoips"]
+CMD ["--help"]

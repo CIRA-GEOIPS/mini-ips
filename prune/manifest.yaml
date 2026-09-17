@@ -1,0 +1,292 @@
+# mini-ips prune manifest
+#
+# Classification is TOTAL: every path in the upstream tree must match a rule
+# here, or `slim.py` exits non-zero and names it.  That is the tripwire -- a
+# deny-list would let a new upstream file ship silently; this will not.
+#
+# Glob syntax is pathlib-style, matched against tree-relative POSIX paths.
+#   `**` spans directories, `*` does not cross a separator.
+
+# ---------------------------------------------------------------------------
+# The dependency budget lives in overlay/pyproject.toml, not here.
+#
+# It is declared once, as the fork's real `[project] dependencies` plus the
+# `[tool.mini-ips] runtime_extras` groups, because that is what actually gets
+# installed and what both Dockerfiles build from. slim.py resolves it to a
+# transitive closure and derives the built-in plugin set from it.
+#
+# This file is therefore about one thing only: which upstream paths ship.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Non-plugin code to keep.  Derived from an AST import-closure over the OBP
+# entry points (order_based, Workflow, the pydantic models), then corrected for
+# the two dynamic-import mechanisms listed under `whole_package`.
+# ---------------------------------------------------------------------------
+keep:
+  # -- YAML plugins ----------------------------------------------------------
+  # Eligible YAML plugins, classified like any other path. Which of these
+  # actually ship is then DERIVED: a YAML plugin is kept only if every plugin
+  # name it references resolves in the kept set, iterated to a fixed point.
+  - geoips/plugins/yaml/products/**
+  - geoips/plugins/yaml/product_defaults/**
+  - geoips/plugins/yaml/feature_annotators/** # includes `default`, required by maps.py:431
+  - geoips/plugins/yaml/gridline_annotators/** # includes `default`, required by maps.py:232
+  - geoips/plugins/yaml/sectors/static/** # includes global_cylindrical + australia
+  # Workflow subtrees are enumerated rather than globbed as `workflows/**`
+  # because `keep:` is matched BEFORE `deny:` (which is what lets
+  # commandline/log_setup.py survive `commandline/*`). A blanket
+  # `workflows/**` would therefore shadow the `workflows/tests/**` deny below
+  # and re-admit 37 golden-imagery fixtures.
+  - geoips/plugins/yaml/workflows/*.yaml
+  - geoips/plugins/yaml/workflows/unit_tests/**
+  - geoips/plugins/yaml/workflows/visir/**
+  - geoips/plugins/yaml/workflows/geostationary_dmw/**
+
+  # -- licence, kept verbatim -----------------------------------------------
+  # The NRL Open License requires notice retention, and every source file
+  # carries the header referencing it.
+  - LICENSE
+  - DISTRIBUTION
+
+  # -- package root ---------------------------------------------------------
+  - geoips/__init__.py # patched: netCDF4/matplotlib made optional
+  - geoips/_version.py
+  - geoips/constants.py # PLUGIN_PROVIDED sentinel
+  - geoips/errors.py
+  - geoips/geoips_utils.py # entry-point scanning, registry loading
+  - geoips/scripting.py # public API for OBP script mode
+
+  # -- the procflow itself --------------------------------------------------
+  - geoips/plugins/__init__.py
+  - geoips/plugins/modules/__init__.py
+  - geoips/plugins/modules/procflows/__init__.py
+  - geoips/plugins/modules/procflows/order_based.py
+  - geoips/plugins/modules/procflows/obp_utils.py
+
+  # -- interfaces: the plug points external packages bind to ----------------
+  - geoips/interfaces/**
+
+  # -- validation -----------------------------------------------------------
+  - geoips/pydantic_models/__init__.py
+  # WHOLE PACKAGE, and the `/**` is load-bearing: v1/__init__.py:25 runs
+  # pkgutil.walk_packages + import_module over the package, so every module is
+  # imported at runtime even though workflows.py names only nine. A static
+  # closure pass wrongly marks six droppable. Never narrow this to an
+  # enumeration. tools/find_orphans.py seeds the same two prefixes as
+  # reachability roots.
+  - geoips/pydantic_models/v1/**
+  - geoips/schema/** # jsonschema for non-workflow YAML kinds
+
+  # -- runtime support ------------------------------------------------------
+  - geoips/config/** # settings; needs no env vars at import
+  - geoips/utils/__init__.py
+  - geoips/utils/context_managers.py
+  # WHOLE PACKAGE, same reason: __init__.py:23 imports datatree_converters
+  # purely for its registration side effect on the shared converter_registry.
+  - geoips/utils/types/**
+  - geoips/xarray_utils/__init__.py
+  - geoips/xarray_utils/coords.py # normalize_geoips_dataset_coords
+  - geoips/xarray_utils/data.py
+  - geoips/xarray_utils/time.py
+  - geoips/data_manipulations/__init__.py
+  - geoips/data_manipulations/info.py
+  - geoips/data_manipulations/merge.py # patched: dead import removed
+  - geoips/filenames/__init__.py
+  - geoips/filenames/base_paths.py # deprecated shim over geoips.config
+  - geoips/sector_utils/__init__.py
+  - geoips/sector_utils/utils.py # OBP needs get_sectors_from_yamls
+
+  # Kept to AVOID a patch rather than because the OBP needs them. Both are
+  # stdlib-only, so they cost no dependency, and keeping them means
+  # `sector_utils/utils.py` needs no edit at all (it imports tc_tracks at
+  # module level and defers two more). Patch count is the fork's real
+  # maintenance cost, so trading ~820 LOC for one fewer patched file is worth it.
+  - geoips/sector_utils/tc_tracks.py
+  - geoips/sector_utils/tc_tracks_database.py
+
+  # Same reasoning: `log_setup` is runtime infrastructure misfiled under
+  # `commandline/`. `geoips/__init__.py` needs add_logging_level for
+  # LOG.interactive and workflow.py calls setup_logging at import. Keeping two
+  # files in place beats moving the module and repointing three importers.
+  - geoips/commandline/__init__.py
+  - geoips/commandline/log_setup.py
+
+  # `dev/product.py` imports only `logging` + `geoips.interfaces`, and three
+  # KEPT plugins call get_covg_from_product (imagery_annotated, metadata_tc,
+  # tc_file_naming). Dependency-neutral, so keep it whole instead of relocating
+  # two functions. `dev/output_config.py` is NOT kept -- it drags cartopy onto
+  # the OBP hot path, which is what patch 02 exists to sever.
+  - geoips/dev/__init__.py
+  - geoips/dev/product.py
+
+
+# ---------------------------------------------------------------------------
+# Shipped, but NOT free.
+#
+# These are kept in the tree so that `SectorPluginBase.create_test_plot` and
+# external imagery plugins can use them, but -- unlike `keep:` -- their
+# dependencies are NOT treated as already paid for. A built-in plugin that
+# imports them is charged for matplotlib/cartopy and, under
+# `plugins.budget_tier: required`, is therefore excluded.
+#
+# Getting this wrong is subtle and was the bug that made this list necessary:
+# with image_utils under `keep:`, the derivation stopped traversing at it and
+# concluded matplotlib was free, so `coverage_checkers/rgba` (whose only
+# dependency is `image_utils.mpl_utils`) looked admissible -- and then broke
+# `geoips config create-registries` on a default install, because registry
+# creation imports every plugin module.
+# ---------------------------------------------------------------------------
+keep_optional:
+  # `maps.py` and `mpl_utils.py` stay: `SectorPluginBase.create_test_plot` and
+  # external imagery plugins import them (lazily, after patches 03 and 08), and
+  # they are the surface the `imagery` extra exists to serve.
+  - geoips/image_utils/__init__.py
+  - geoips/image_utils/maps.py
+  - geoips/image_utils/mpl_utils.py
+  # `colormap_utils.py` does NOT stay. It only ever served the ASCII-palette
+  # colormappers, which the `required` tier excludes, and
+  # `tools/find_orphans.py` confirms nothing reaches it.
+
+# ---------------------------------------------------------------------------
+# Built-in plugins: DERIVED, not enumerated.
+#
+# A plugin module is admissible iff its own un-guarded third-party imports fall
+# inside the resolved dependency closure AND every plugin module it imports is
+# admissible. That second clause makes it a fixed point, not a filter:
+# `interp_grid` passes on its own imports but pulls in `interp_scipy`
+# (scipy, alphashape, skimage).
+#
+# The payoff is CI maintenance: upstream adding a numpy-only algorithm is
+# included automatically, a reader that starts importing h5py is excluded
+# automatically, and neither needs a manifest edit.
+# ---------------------------------------------------------------------------
+plugins:
+  root: geoips/plugins/classes
+
+  # Which tier of `allowed_dependencies` a built-in plugin must fit inside.
+  #
+  #   required  the strict reading of the rule, and the default: a built-in
+  #             plugin may not add anything to a default `pip install
+  #             mini-geoips`. Registry creation exec_module()s every plugin, so
+  #             a plugin needing an uninstalled extra does not merely fail
+  #             lazily -- it breaks `geoips config create-registries` for
+  #             everyone. The extras therefore exist for EXTERNAL plugins to
+  #             reuse geoips' helpers, not to widen what we ship.
+  #   all       also admit plugins that only need the declared extras. Adds the
+  #             23 matplotlib colormappers and the imagery output formatters,
+  #             at the cost of making matplotlib + cartopy effectively required.
+  #
+  # `required` is the chosen policy: no built-in plugin may add anything to a
+  # default `pip install mini-geoips`. This is what makes a musl/Alpine image
+  # practical -- matplotlib and cartopy are the two dependencies with no
+  # musllinux wheels worth relying on.
+  #
+  # The consequence is explicit: no colormappers (bar cmap_rgb), no imagery
+  # output formatters, and no built-in workflows, because every upstream
+  # workflow needs one of those or an excluded reader. Imagery comes from
+  # external plugin packages plus `pip install mini-geoips[imagery]`.
+  #
+  # Measured at 1.20.0a0: required -> 77 plugins / 0 workflows,
+  #                       all      -> 125 plugins / 11 workflows.
+  budget_tier: required
+  # Imports inside `with import_optional_dependencies(...)` or a
+  # try/except ImportError do not count against the budget. That is fixed in
+  # tools/depbudget.py, not configurable: the guard set is a property of how
+  # geoips marks optional imports, not a policy choice.
+
+# ---------------------------------------------------------------------------
+# YAML / text plugins. Same spirit: keep one only if every plugin NAME it
+# references resolves in the derived set.
+# ---------------------------------------------------------------------------
+yaml_plugins:
+  # Only an anchor now: which subtree the YAML derivation walks. Which YAML
+  # plugins are eligible is expressed as ordinary `keep:`/`deny:` globs like
+  # every other path, and which of those actually ship is DERIVED -- a YAML
+  # plugin is kept only if every plugin name it references resolves, iterated
+  # to a fixed point (products -> product_defaults -> colormappers).
+  root: geoips/plugins/yaml
+
+# ---------------------------------------------------------------------------
+# Explicit deletions. Anything here is dropped; anything matching NEITHER keep
+# nor deny -- and not auto-included as plugin support -- is reported for triage.
+# ---------------------------------------------------------------------------
+deny:
+  # -- YAML plugins that cannot work here ------------------------------------
+  - geoips/plugins/yaml/sectors/dynamic/** # needs the excluded bdeck/volc parsers
+  - geoips/plugins/yaml/sectors/integration_tests/** # upstream test fixtures
+  - geoips/plugins/yaml/workflows/tests/** # all carry compare_path + GEOIPS_TESTDATA_DIR
+
+  # -- the whole point of the fork ------------------------------------------
+  - geoips/plugins/modules/procflows/single_source.py
+  - geoips/plugins/modules/procflows/config_based.py
+
+  # -- CLI: replaced by the fork-owned minimal CLI in overlay/ --------------
+  - geoips/cli.py # zero importers, not an entry point: dead upstream
+  - geoips/commandline/* # log_setup + __init__ are re-kept above
+  - geoips/commandline/ancillary_info/**
+
+  # -- legacy / superseded --------------------------------------------------
+  - geoips/dev/output_config.py # set_lonlat_spacing relocated by patch 02
+  - geoips/pydantic_models/v2alpha1/**
+  - geoips/utils/memusg/**
+  - geoips/utils/cache_files.py
+  - geoips/utils/composite.py
+  - geoips/utils/decorators.py
+  - geoips/utils/file_utils.py
+  - geoips/filenames/duplicate_files.py
+  - geoips/sector_utils/estimate_area_extent.py
+  - geoips/sector_utils/overpass_predictor.py
+  - geoips/sector_utils/projections.py
+  - geoips/xarray_utils/xr_to_dtree.py
+
+  # Only ever served the ASCII-palette colormappers, which the `required`
+  # budget tier excludes. `tools/find_orphans.py` reports colormap_utils as
+  # unreachable; the .txt palettes are the data half of the same finding.
+  - geoips/image_utils/colormap_utils.py
+  - geoips/plugins/txt/**
+
+  # Private helpers of built-in plugins. Denied here so that nothing UNREACHED
+  # lingers, but because `deny` is still traversed for cost accounting the
+  # budget is what actually decides: `data_manipulations/{conversions,
+  # corrections}.py` and `sector_utils/yaml_utils.py` are in budget and get
+  # auto-included as plugin support, while `utils/coverage_checkers`
+  # hard-imports `skimage.draw` inside `create_radius`, so it stays out and
+  # correctly excludes the two center_radius coverage checkers that call it.
+  - geoips/utils/coverage_checkers/**
+  - geoips/data_manipulations/conversions.py
+  - geoips/data_manipulations/corrections.py
+  - geoips/sector_utils/yaml_utils.py
+  - geoips/docs/** # a misplaced brassy note, shipped in the wheel
+
+  # Provenance documents for how the SEVIRI RGB recipes were derived. No code
+  # reads them and they reference a productfiles.dtd that is not in the tree.
+  # The visir algorithm plugins themselves are kept; only these inert XMLs go.
+  - geoips/plugins/classes/algorithms/visir/seviri_xmls/**
+
+  # -- repo infrastructure the fork replaces or does not need ---------------
+  - tests/** # overlay/tests/ replaces this
+  - docs/** # 30 MB, 22 of it docs/archive/images
+  - environments/** # 17 versioned provenance dirs, regenerated per release
+  - setup/** # pre-ansible installer; its setup.sh target no longer exists
+  - v2_migration_tools/** # one-shot 2.0 migration aids, needs libcst
+  - .github/** # upstream CI is shims into the private geoips_ci repo
+  - .devcontainer/**
+  - .config/**
+  - obp-windbarbs-workflow-walkthrough.ipynb
+  - windbard-workflow-test.yaml # stray workflow at repo root
+  - Dockerfile
+  - Makefile # pure Docker/ansible wrapper
+  - flake.nix
+  - pyproject.toml # overlay supplies its own
+  - pytest.ini # overlay supplies its own
+  - .cspell.json # 1,100 entries, no workflow runs cspell
+  - .dockerignore
+  - .flake8 # overlay supplies its own
+  - bandit.yml
+  - .gitignore
+  - CHANGELOG.rst
+  - CHANGELOG_TEMPLATE.rst
+  - COMMIT_MESSAGE_TEMPLATE.md
+  - README.md # overlay supplies a fork README
+  - CODE_OF_CONDUCT.md

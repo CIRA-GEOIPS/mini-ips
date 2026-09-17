@@ -1,0 +1,29 @@
+[flake8]
+max-line-length = 88
+extend-ignore =
+    # black owns whitespace-before-colon and line-break-before-operator
+    E203,
+    W503
+docstring-convention = numpy
+
+# `prune/` and `tools/` are internal build scripts, not a published API. Module,
+# class and non-trivial function docstrings are still required (D100, D101,
+# D102, D205, D400 all stay on); what is relaxed is D103 on the small private
+# helpers -- a one-line "Return the thing." above an obvious three-line function
+# is noise, and requiring it trains people to write noise.
+#
+# `overlay/geoips_cli/` keeps D103: it is the user-facing surface, and its
+# docstrings are what `--help` and the module header explain.
+per-file-ignores =
+    prune/slim.py:D103,D105
+    tools/*.py:D103,D105,D107
+    # Fork-owned copies of upstream's tests. Their style is upstream's problem;
+    # re-copying them from upstream must not mean re-fixing lint.
+    overlay/tests/*:D,E501
+
+exclude =
+    .git,
+    __pycache__,
+    build,
+    geoips,
+    .venv

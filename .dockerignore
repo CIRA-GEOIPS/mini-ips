@@ -1,0 +1,17 @@
+# The images consume the generated tree (`build/`) plus `docker/selfcheck.py`,
+# and nothing else here. These are the entries big enough to matter: the
+# upstream clone alone is ~514 MB, several times the image it is not part of.
+#
+# Deny-list rather than `*` + negations: re-including a nested path under a
+# blanket `*` depends on directory-traversal subtleties that are easy to get
+# subtly wrong, and the win would be a few hundred KB.
+upstream-geoips/
+.upstream-cache.git/
+
+.git/
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.log
+*.json

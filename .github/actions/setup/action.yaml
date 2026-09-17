@@ -1,0 +1,41 @@
+# The preamble every workflow here needs. Extracted because it was repeated
+# five times and drifted: two copies cloned upstream with a working tree, two
+# without, and all four followed the clone with a `git fetch --tags` that does
+# nothing (`git clone` already fetches every branch and tag).
+name: setup
+description: Python, uv, the build tooling, and optionally the upstream clone.
+
+inputs:
+  upstream:
+    description: >
+      Clone upstream geoips into ./upstream-geoips. Set to "skip" for jobs that
+      do not regenerate the tree (lint).
+    default: "clone"
+  packages:
+    description: Extra packages to install into the system python.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - uses: astral-sh/setup-uv@v5
+
+    # pyyaml and packaging are what prune/ and tools/ import; everything else
+    # a job needs goes through `packages:`.
+    - shell: bash
+      run: uv pip install --system pyyaml packaging ${{ inputs.packages }}
+
+    # --no-checkout is deliberate: slim.py exports the tree it needs with
+    # `git archive`, so a 500 MB working copy would be pure cost. The clone is
+    # NOT named `geoips` -- a sibling directory of that name shadows the
+    # installed package as a namespace package, and every tool run from the
+    # repo root would then import unpruned upstream by mistake.
+    - if: inputs.upstream != 'skip'
+      shell: bash
+      run: |
+        repo=$(python -c "import yaml;print(yaml.safe_load(open('upstream.lock'))['repo'])")
+        git clone --filter=blob:none --no-checkout "$repo" upstream-geoips

@@ -1,0 +1,49 @@
+# Build and publish the wheel as `mini-geoips`.
+#
+# Never reuses upstream's PyPI name or credentials: the distribution is renamed
+# precisely so that publishing cannot collide with theirs. The import package
+# stays `geoips`, which is what keeps external plugins working.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write # PyPI trusted publishing; no long-lived token needed
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          packages: build
+
+      # slim.py is the whole gate: classification tripwire, patch application,
+      # dependency-budget ceilings and the import-closure check all fail the
+      # build here rather than shipping a broken wheel.
+      - name: Generate and verify
+        run: python prune/slim.py --upstream-path upstream-geoips
+
+      - name: Build the wheel
+        run: cd build && python -m build
+
+      # Keep the exact tree the wheel came from. `build/` is generated, so
+      # without this there is no record of what a published version contained.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mini-geoips-dist
+          path: |
+            build/dist/*
+            upstream.lock
+            prune/dependency-closure.lock
+
+      - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: build/dist

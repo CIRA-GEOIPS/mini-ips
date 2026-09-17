@@ -1,0 +1,26 @@
+diff --git a/geoips/interfaces/class_based/output_formatters.py b/geoips/interfaces/class_based/output_formatters.py
+index 835b2aa..a44cc58 100644
+--- a/geoips/interfaces/class_based/output_formatters.py
++++ b/geoips/interfaces/class_based/output_formatters.py
+@@ -11,7 +11,6 @@ import logging
+ from os.path import dirname, exists
+ import warnings
+ 
+-import cartopy.crs as crs
+ import numpy
+ import xarray as xr
+ 
+@@ -396,6 +395,13 @@ class WindbarbOutputFormatterPlugin(BaseOutputFormatterPlugin, abstract=True):
+         barb_color_variable="speed",
+     ):
+         """Plot windbarbs on matplotlib figure."""
++        # Deferred so that importing the output_formatters INTERFACE --
++        # which geoips/interfaces/__init__.py does eagerly, on every OBP
++        # run -- does not require cartopy. `crs` is used only in this
++        # method, and only when actually plotting barbs, so it belongs to
++        # the `imagery` extra rather than the base install.
++        import cartopy.crs as crs
++
+         # main_ax.extent = area_def.area_extent_ll
+         main_ax.set_extent(mapobj.bounds, crs=mapobj)
+         # main_ax.extent = mapobj.bounds

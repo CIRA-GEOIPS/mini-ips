@@ -1,0 +1,42 @@
+diff --git a/geoips/__init__.py b/geoips/__init__.py
+index 0ec8119..48fccdd 100644
+--- a/geoips/__init__.py
++++ b/geoips/__init__.py
+@@ -17,11 +17,17 @@ Homepage: https://github.com/NRLMMD-GEOIPS/geoips
+ .. |unireg|    unicode:: U+000AE .. REGISTERED SIGN
+ """
+ 
+-# Importing netCDF4 here so that it is always imported before
+-# xarray. Because if xarray is imported first, xarrays
+-# own netCDF4 functions conflict and cause segfaults
+-import netCDF4  # noqa
+-from matplotlib import rcParams
++from contextlib import suppress
++
++# Importing netCDF4 here so that it is always imported before xarray, because
++# if xarray is imported first its own netCDF4 functions conflict and cause
++# segfaults. mini-ips ships no readers that require netCDF4, so it is an
++# optional extra -- but when a plugin package does install it, the ordering
++# still has to hold, which is why this stays at the top of the module rather
++# than being dropped.
++with suppress(ImportError):
++    import netCDF4  # noqa
++
+ from geoips import errors
+ from geoips import filenames
+ from geoips import interfaces
+@@ -32,8 +38,12 @@ from ._version import __version__, __version_tuple__
+ import logging  # noqa
+ from geoips.commandline.log_setup import add_logging_level
+ 
+-# Turn off image interpolation for matplotlib by default.
+-rcParams["image.interpolation"] = "none"
++# Turn off image interpolation for matplotlib by default. Only relevant when
++# the `imagery` extra is installed; the OBP runtime itself never plots.
++with suppress(ImportError):
++    from matplotlib import rcParams
++
++    rcParams["image.interpolation"] = "none"
+ 
+ # Setting INTERACTIVE to 25 as this is between INFO (20) and WARNING (30). This way,
+ # WARNING output will still be shown if INFO or INTERACTIVE is set.

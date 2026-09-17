@@ -1,0 +1,60 @@
+# Weekly early warning, REPORT ONLY.
+#
+# The release watcher only fires when upstream tags, which can be months. This
+# runs the same classification against upstream's default branch so the work a
+# future release will require is visible before it lands as one big sync.
+#
+# It opens no PR by design -- a weekly PR nobody merges trains people to ignore
+# the sync label. It comments on a single tracking issue instead.
+name: upstream-main-drift
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      - name: Classify against upstream main
+        id: drift
+        run: |
+          sha=$(git -C upstream-geoips rev-parse origin/HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          pinned=$(python -c "import yaml;print(yaml.safe_load(open('upstream.lock'))['sha'])")
+          echo "behind=$(git -C upstream-geoips rev-list --count "$pinned..$sha")" >> "$GITHUB_OUTPUT"
+
+          # A throwaway lock rather than an in-place rewrite of the tracked
+          # one. The old version edited upstream.lock and relied on nothing
+          # later committing it -- true today, but the kind of assumption that
+          # breaks the first time a step is added below.
+          sed "s|^sha: .*|sha: \"$sha\"|" upstream.lock > "$RUNNER_TEMP/drift.lock"
+
+          set +e
+          python prune/slim.py --check-only --lock "$RUNNER_TEMP/drift.lock" \
+            --upstream-path upstream-geoips > drift.log 2>&1
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Comment on the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="upstream main drift"
+          body=$(printf '### %s commits ahead of the pin (`%s`)\n\n```\n%s\n```\n' \
+            "${{ steps.drift.outputs.behind }}" "${{ steps.drift.outputs.sha }}" \
+            "$(tail -60 drift.log)")
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --label upstream-sync --body "$body"
+          fi

@@ -1,0 +1,111 @@
+diff --git a/geoips/utils/types/gridline_spacing.py b/geoips/utils/types/gridline_spacing.py
+new file mode 100644
+index 0000000..771e90e
+--- /dev/null
++++ b/geoips/utils/types/gridline_spacing.py
+@@ -0,0 +1,92 @@
++# # # This source code is subject to the license referenced at
++# # # https://github.com/NRLMMD-GEOIPS.
++
++"""Automatic gridline spacing for the order-based procflow.
++
++``YamlPluginCallable`` calls this on every workflow step that carries a
++gridline annotator, which upstream satisfies from
++``geoips.dev.output_config``. That module is legacy ``--output_config``
++machinery and imports four interfaces plus ``geoips.image_utils.maps``, so it
++drags ``cartopy`` onto the OBP hot path -- for two functions of pure
++arithmetic.
++
++Both functions are copied verbatim from upstream
++(``geoips/dev/output_config.py::set_lonlat_spacing`` and
++``geoips/image_utils/maps.py::compute_lon_extent``) so that behaviour is
++identical; only the import surface changes. ``compute_lon_extent`` is
++duplicated rather than imported from ``image_utils.maps`` because that module
++imports ``cartopy`` at module scope, which is exactly what this file exists to
++avoid.
++"""
++
++import logging
++
++import pyresample
++
++LOG = logging.getLogger(__name__)
++
++# A sector this tall is a full-globe sector, whose longitude edges both wrap to
++# the same point.
++GLOBAL_SECTOR_LAT_EXTENT_DEG = 150
++
++
++def compute_lon_extent(area_def):
++    """Return the longitude extent (deg) of an area, handling wrap-around.
++
++    ``wrap_longitudes`` maps both edges into [-180, 180], which can invert or
++    collapse the min/max ordering. Add 360 to ``maxlon`` to recover a positive
++    extent for dateline-crossing sectors and for global sectors (where a
++    full-globe area_def wraps both edges to the same point).
++    """
++    minlon = pyresample.utils.wrap_longitudes(area_def.area_extent_ll[0])
++    maxlon = pyresample.utils.wrap_longitudes(area_def.area_extent_ll[2])
++    lat_extent = area_def.area_extent_ll[3] - area_def.area_extent_ll[1]
++    if maxlon < minlon or (
++        maxlon == minlon and lat_extent >= GLOBAL_SECTOR_LAT_EXTENT_DEG
++    ):
++        maxlon = maxlon + 360
++    return maxlon - minlon
++
++
++def set_lonlat_spacing(gridline_annotator, area_def):
++    """Fill in `auto` gridline spacing for a sector, in place."""
++    if (
++        gridline_annotator is None
++        or "grid_lat_spacing" not in gridline_annotator.keys()
++        or "grid_lon_spacing" not in gridline_annotator.keys()
++        or gridline_annotator["grid_lon_spacing"] == "auto"
++        or gridline_annotator["grid_lat_spacing"] == "auto"
++    ):
++        minlat = area_def.area_extent_ll[1]
++        maxlat = area_def.area_extent_ll[3]
++        lon_extent = compute_lon_extent(area_def)
++        lat_extent = maxlat - minlat
++
++        if lon_extent > 5:
++            lon_spacing = int(lon_extent / 5)
++        elif lon_extent > 2.5:
++            lon_spacing = 1
++        else:
++            lon_spacing = lon_extent / 5.0
++
++        if lat_extent > 5:
++            lat_spacing = int(lat_extent / 5)
++        elif lat_extent > 2.5:
++            lat_spacing = 1
++        else:
++            lat_spacing = lat_extent / 5.0
++
++        LOG.info("lon_extent: %s, lon_spacing: %s", lon_extent, lon_spacing)
++        # Legacy flat keys, retained for the classic procflows.
++        gridline_annotator["grid_lat_spacing"] = lat_spacing
++        gridline_annotator["grid_lon_spacing"] = lon_spacing
++        # OBP gridline_annotator plugins use a nested ``spacing:
++        # {latitude, longitude}`` dict (possibly under ``spec``) instead of the
++        # flat keys above; keep it in sync so both code paths see the spacing.
++        spacing_source = gridline_annotator.get("spec", gridline_annotator)
++        spacing = spacing_source.get("spacing") if "spacing" in spacing_source else {}
++        if isinstance(spacing, dict):
++            spacing["latitude"] = lat_spacing
++            spacing["longitude"] = lon_spacing
++
++    return gridline_annotator
+diff --git a/geoips/utils/types/yaml_plugin_callable.py b/geoips/utils/types/yaml_plugin_callable.py
+index 80e2e01..589405c 100644
+--- a/geoips/utils/types/yaml_plugin_callable.py
++++ b/geoips/utils/types/yaml_plugin_callable.py
+@@ -22,7 +22,7 @@ import xarray as xr
+ from geoips.utils.types.datatree_ditto import DataTreeDitto
+ from geoips.utils.types.obp_conduits import kwarg_name_for_kind
+ from geoips.utils.types.partial_lexeme import Lexeme
+-from geoips.dev.output_config import set_lonlat_spacing
++from geoips.utils.types.gridline_spacing import set_lonlat_spacing
+ 
+ LOG = logging.getLogger(__name__)
+ 

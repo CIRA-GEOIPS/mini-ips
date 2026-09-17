@@ -1,0 +1,17 @@
+diff --git a/geoips/plugins/classes/filename_formatters/geotiff_fname.py b/geoips/plugins/classes/filename_formatters/geotiff_fname.py
+index 69dc34a..932e698 100644
+--- a/geoips/plugins/classes/filename_formatters/geotiff_fname.py
++++ b/geoips/plugins/classes/filename_formatters/geotiff_fname.py
+@@ -10,7 +10,11 @@ from geoips.interfaces.class_based.filename_formatters import (
+ # Python Standard Libraries
+ import logging
+ 
+-from geoips.plugins.modules.procflows.single_source import remove_unsupported_kwargs
++# Upstream imports this from the single_source procflow, which mini-ips does
++# not ship. `geoips.geoips_utils` carries the same implementation -- upstream
++# has it in both places (geoips_utils.py:246 and single_source.py:827) -- so
++# this repoints to the one that is not a legacy procflow.
++from geoips.geoips_utils import remove_unsupported_kwargs
+ from geoips.filenames.base_paths import PATHS as gpaths
+ 
+ LOG = logging.getLogger(__name__)

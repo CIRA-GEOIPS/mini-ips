@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: mini-ips-fixture-plugins
+Version: 0.1.0
+Summary: Synthetic external plugin package for the mini-ips test suite
+Requires-Python: >=3.11

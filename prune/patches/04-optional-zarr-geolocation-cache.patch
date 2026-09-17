@@ -1,0 +1,25 @@
+diff --git a/geoips/plugins/classes/readers/utils/geostationary_geolocation.py b/geoips/plugins/classes/readers/utils/geostationary_geolocation.py
+index 9f50288..403cd09 100644
+--- a/geoips/plugins/classes/readers/utils/geostationary_geolocation.py
++++ b/geoips/plugins/classes/readers/utils/geostationary_geolocation.py
+@@ -12,7 +12,6 @@ from pyresample import utils
+ from pyresample.geometry import SwathDefinition
+ from pyresample.kd_tree import get_neighbour_info  # , get_sample_from_neighbour_info
+ import time
+-import zarr
+ 
+ from geoips.errors import CoverageError
+ from geoips.filenames.base_paths import PATHS as gpaths
+@@ -31,6 +30,12 @@ with import_optional_dependencies(loglevel="info"):
+     """Attempt to import a package and print to LOG.info if the import fails."""
+     import numexpr as ne
+ 
++    # zarr is one of two interchangeable geolocation cache backends (the other
++    # is netCDF, selected by geolocation_cache_backend), so it belongs in the
++    # same optional block as numexpr rather than being a hard requirement of
++    # importing the reader interface.
++    import zarr
++
+ 
+ nprocs = 6
+ 

@@ -1,0 +1,65 @@
+apiVersion: geoips/v1
+interface: workflows
+family: order_based
+name: mini_ips_reference
+package: geoips
+docstring: |
+  Reference workflow using only plugins mini-ips always ships.
+
+  Fork-owned rather than inherited: every upstream workflow names either an
+  excluded reader or an excluded colormapper, so a strict mini-ips install would
+  otherwise register no workflow at all -- leaving `geoips list workflows` empty
+  and nothing to copy when writing your first one.
+
+  Every step here resolves against the `required` dependency budget, so this
+  workflow stays valid no matter which optional extras are installed. It is also
+  the anchor the pydantic model tests validate against, which means it cannot
+  quietly rot: if a future upstream sync excludes one of these plugins, the
+  derivation drops this workflow and the tests fail loudly.
+
+  It reads GeoIPS-format netCDF, so it needs no reader beyond `geoips_netcdf`
+  and writes netCDF back out -- no plotting, hence no matplotlib.
+spec:
+  steps:
+    reader:
+      kind: reader
+      name: geoips_netcdf
+      depends_on: []
+      arguments: {}
+
+    sector:
+      kind: sector
+      name: global_cylindrical
+      depends_on: []
+      arguments: {}
+
+    interpolator:
+      kind: interpolator
+      name: interp_nearest
+      depends_on: [reader, sector]
+      arguments: {}
+
+    algorithm:
+      kind: algorithm
+      name: single_channel
+      depends_on: [interpolator]
+      arguments:
+        output_data_range: [-90.0, 30.0]
+        input_units: Kelvin
+        output_units: celsius
+        min_outbounds: crop
+        max_outbounds: crop
+        norm: false
+        inverse: false
+
+    filename:
+      kind: filename_formatter
+      name: geoips_netcdf_fname
+      depends_on: [algorithm]
+      arguments: {}
+
+    output_formatter:
+      kind: output_formatter
+      name: netcdf_geoips
+      depends_on: [algorithm, filename]
+      arguments: {}

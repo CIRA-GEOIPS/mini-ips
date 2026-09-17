@@ -1,0 +1,92 @@
+# The required check: regenerate the fork from the pinned upstream commit and
+# prove the result works.
+#
+# Written from scratch rather than adapted from upstream, whose six active
+# workflows are ~30-line shims into the private NRLMMD-GEOIPS/geoips_ci repo
+# (and whose one self-contained job needs a `vars.RUNNER` a fork does not have).
+name: verify
+
+on:
+  pull_request:
+    paths-ignore: ["README.md", "docs/**"]
+  push:
+    branches: [main]
+    paths-ignore: ["README.md", "docs/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      # Stages 1-2 only. Fails with exit 3, listing every upstream path the
+      # manifest does not classify -- the tripwire that stops new upstream
+      # files from shipping unnoticed.
+      - name: Classify (tripwire)
+        run: python prune/slim.py --check-only --upstream-path upstream-geoips
+
+      # The full build. This also runs the import-closure gate, which lives
+      # inside slim.py because it needs the PRISTINE pre-patch export as its
+      # baseline: inherited upstream breakage must not be reported as ours, and
+      # by the time a separate command could run, that export is gone.
+      # Exit 3 = unclassified paths, 5 = a newly dangling geoips.* import.
+      - name: Generate build/
+        run: python prune/slim.py --upstream-path upstream-geoips --json slim.json
+
+      # Advisory, not a gate. Tightening the dependency budget strands whatever
+      # existed only to serve the plugins that just got excluded, and the
+      # closure gate cannot see that -- an unreachable module still imports
+      # fine. Printed so it shows up in the log and in sync PRs.
+      - name: Orphan check (advisory)
+        run: python tools/find_orphans.py build || true
+
+      - name: Install the generated package
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e ./build
+          uv pip install --python .venv/bin/python -e ./build/tests/fixture_plugin_pkg
+          uv pip install --python .venv/bin/python pytest pytest-mock
+
+      - name: Build plugin registries
+        env:
+          GEOIPS_OUTDIRS: ${{ runner.temp }}/geoips_outdirs
+        run: .venv/bin/geoips config create-registries
+
+      - name: Tests
+        env:
+          GEOIPS_OUTDIRS: ${{ runner.temp }}/geoips_outdirs
+        run: cd build && "$GITHUB_WORKSPACE/.venv/bin/python" -m pytest
+
+      # The dependency budget is asserted inside slim.py, where the closure is
+      # known. What is left here is import time, which no other gate can see: a
+      # patch that stops deferring matplotlib or cartopy still builds, still
+      # passes the tests, and just makes every invocation slower.
+      - name: Import time
+        run: python tools/import_time.py --python .venv/bin/python --assert-budget
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-report
+          path: slim.json
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          upstream: skip
+          packages: black flake8 flake8-docstrings
+      - name: Lint the code the fork owns
+        # Only prune/, tools/, overlay/ and docker/ -- linting the generated
+        # tree would be linting upstream's code, which is not ours to fix.
+        run: |
+          black --check prune tools overlay/geoips_cli docker/selfcheck.py
+          flake8 prune tools overlay/geoips_cli docker/selfcheck.py
