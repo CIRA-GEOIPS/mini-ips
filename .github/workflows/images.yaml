@@ -121,9 +121,16 @@ jobs:
           test "$plugins" -gt 100
           echo "::endgroup::"
 
+          # Capture first, then match. `docker run ... | grep -q` fails under
+          # `set -o pipefail`: grep -q exits at the first match and closes the
+          # pipe, docker dies with "write /dev/stdout: broken pipe", and
+          # pipefail reports the pipeline as failed even though the assertion
+          # passed. Nothing about the image is wrong.
           echo "::group::$image reference workflow"
-          docker run --rm "$image" list workflows | grep -q mini_ips_reference
-          docker run --rm "$image" expand mini_ips_reference | grep -q 'name: mini_ips_reference'
+          workflows=$(docker run --rm "$image" list workflows)
+          grep -q mini_ips_reference <<<"$workflows"
+          expanded=$(docker run --rm "$image" expand mini_ips_reference)
+          grep -q 'name: mini_ips_reference' <<<"$expanded"
           echo "::endgroup::"
 
           # This assertion used to be `test "$(... ; echo ok)" = ok`, which
